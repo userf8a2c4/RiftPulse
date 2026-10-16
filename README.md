@@ -1,4 +1,4 @@
-# Worlds en vivo
+# RiftPulse
 
 Una segunda pantalla para ver el **Mundial de League of Legends 2026 (Worlds)**: predicción en vivo del ganador con un modelo entrenado y **honesto sobre sus aciertos**, resumen de cada partido, simulación del torneo y ayuda para el Pick'Em oficial.
 
@@ -38,7 +38,7 @@ Las probabilidades son **estimaciones**, no certezas. El valor del proyecto est�
 
 ## Aviso legal
 
-**Worlds en vivo** no está avalado por Riot Games y no refleja las opiniones de Riot Games ni de nadie oficialmente involucrado en la producción o gestión de League of Legends. League of Legends y Riot Games son marcas o marcas registradas de Riot Games, Inc. League of Legends © Riot Games, Inc.
+**RiftPulse** no está avalado por Riot Games y no refleja las opiniones de Riot Games ni de nadie oficialmente involucrado en la producción o gestión de League of Legends. League of Legends y Riot Games son marcas o marcas registradas de Riot Games, Inc. League of Legends © Riot Games, Inc.
 
 ## Licencia
 

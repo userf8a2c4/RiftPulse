@@ -205,7 +205,10 @@ function detect(prev, cur, gt) {
       }
     }
     if (b.barons > a.barons) {
-      G.t.baronBuff = {side, until: gt + 180};
+      const o = cur[side === 'blue' ? 'redTeam' : 'blueTeam'];
+      // Foto al tomar el Barón: sirve para medir cuánto amplía su ventaja durante el "powerplay".
+      G.t.baronBuff = {side, until: gt + 180, start: gt, frozen: null,
+        s0: {gold: b.totalGold - o.totalGold, k: b.totalKills, tw: b.towers, dr: b.dragons.length, inh: b.inhibitors}};
       G.t.baron = {at: gt + 360};
       ev(gt, side, 'Barón Nashor', 'baron');
     }
@@ -319,7 +322,11 @@ function processFrame(f) {
   G.wp = winProb(f, gt);
   const s = G.samples[G.samples.length - 1];
   if (!s || gt - s.gt >= 10) G.samples.push({gt, diff: f.blueTeam.totalGold - f.redTeam.totalGold, p: G.wp.p});
-  if (f.gameState === 'finished') { G.ended = true; ENDS[G.id] = gt; }
+  if (f.gameState === 'finished') {
+    const wasEnded = G.ended;
+    G.ended = true; ENDS[G.id] = gt;
+    if (!wasEnded && !REPLAY && !PIN) confirmSeries();  // refresca el marcador de la serie sin esperar al ciclo de 30 s
+  }
 }
 
 async function startGame(id) {
@@ -419,6 +426,20 @@ async function tickDetails() {
 }
 
 async function tickSeries() { if (M) { try { await loadEvent(M.id, M.block); render(); } catch (e) {} } }
+// Al terminar un juego el feed tarda unos segundos en sumar el punto a la serie; reintenta hasta que el marcador lo refleje.
+let serieEnd = 0;
+async function confirmSeries() {
+  const token = ++serieEnd;
+  if (!M) return;
+  const total = () => M ? M.teams.reduce((a, t) => a + ((t.result || {}).gameWins || 0), 0) : 0;
+  const before = total();
+  for (const wait of [0, 4000, 8000, 15000, 25000, 40000]) {
+    await new Promise(r => setTimeout(r, wait));
+    if (token !== serieEnd || !M || !G || !G.ended || REPLAY || PIN) return;
+    await tickSeries();
+    if (total() > before) return;  // el feed ya sumó el juego al marcador
+  }
+}
 
 async function tickSchedule() {
   try {
@@ -653,6 +674,30 @@ function renderEvents() {
   el.innerHTML = G.events.slice().reverse().slice(0, 30).map(e => `<li><span class="t">${mmss(e.gt)}</span>${evIcon(e.kind)} <b class="${e.side[0]}">${esc(code(e.side))}</b> ${esc(e.txt)}</li>`).join('');
 }
 
+// Powerplay del Barón: cuánto amplía su ventaja el equipo mientras tiene el buff (oro neto + objetivos tomados).
+function baronPlay(gt) {
+  const bb = G.t.baronBuff;
+  if (!bb || !bb.s0 || !G.last) return null;
+  const active = gt <= bb.until;
+  if (!active) {
+    // Ya terminó el buff: muestra el resultado congelado hasta que el Barón reaparezca.
+    if (!bb.frozen || !(G.t.baron && gt < G.t.baron.at)) return null;
+    return {side: bb.side, active: false, gold: bb.frozen.gold, chips: bb.frozen.chips, dGold: bb.frozen.dGold};
+  }
+  const b = G.last.blueTeam, r = G.last.redTeam;
+  const T = bb.side === 'blue' ? b : r, O = bb.side === 'blue' ? r : b;
+  const dGold = (T.totalGold - O.totalGold) - bb.s0.gold;  // cambio neto de la ventaja (cuenta también lo que farmea el rival)
+  const dK = T.totalKills - bb.s0.k, dTw = T.towers - bb.s0.tw, dDr = T.dragons.length - bb.s0.dr, dInh = T.inhibitors - bb.s0.inh;
+  const chips = [];
+  if (dTw > 0) chips.push(dTw + (dTw > 1 ? ' torres' : ' torre'));
+  if (dDr > 0) chips.push(dDr + (dDr > 1 ? ' dragones' : ' dragón'));
+  if (dInh > 0) chips.push(dInh + (dInh > 1 ? ' inhibidores' : ' inhibidor'));
+  if (dK > 0) chips.push(dK + (dK > 1 ? ' kills' : ' kill'));
+  const gold = `${dGold >= 0 ? '+' : '−'}${k1(Math.abs(dGold))} oro`;
+  bb.frozen = {gold, chips, dGold};  // se refresca mientras está vivo; al expirar queda el último valor
+  return {side: bb.side, active: true, gold, chips, dGold};
+}
+
 function renderTimers() {
   if (FREEZE) return;
   const el = $('#timers');
@@ -667,11 +712,19 @@ function renderTimers() {
   // Siempre las mismas 4 casillas, para que la caja no cambie de alto.
   card(`${oi(d.elder ? 'elder' : 'dragon', 14)} ${dn}`, d.at > gt ? 'en ' + mmss(d.at - gt) : 'disponible', soulTxt || '&nbsp;');
   card(`${oi('baron', 14)} Barón`, G.t.baron ? (G.t.baron.at > gt ? 'en ' + mmss(G.t.baron.at - gt) : 'disponible') : 'sin tomar', G.t.baron ? 'reaparece 6:00 después' : '&nbsp;');
-  const buffs = [];
-  const tag = (x, n) => `<span class="${x.side[0]}">${esc(code(x.side))}</span> ${n} ${mmss(x.until - gt)}`;
-  if (G.t.baronBuff && G.t.baronBuff.until > gt) buffs.push(tag(G.t.baronBuff, 'Barón'));
-  if (G.t.elderBuff && G.t.elderBuff.until > gt) buffs.push(tag(G.t.elderBuff, 'Ancestral'));
-  card('Buff activo', buffs[0] || '—', buffs[1] || (buffs.length ? 'mientras sigan vivos' : 'ninguno'));
+  // 3ª casilla: con el Barón activo muestra el "powerplay" (cuánto gana ese equipo); si no, el buff activo.
+  const pp = baronPlay(gt);
+  if (pp) {
+    const when = pp.active ? mmss(G.t.baronBuff.until - gt) + ' de buff' : 'resultado final';
+    const sub = pp.chips.length ? `${when} · ${pp.chips.join(' · ')}` : `${when} · sin objetivos aún`;
+    card(`${oi('baron', 14)} Powerplay <span class="${pp.side[0]}">${esc(code(pp.side))}</span>`,
+      `<span class="${pp.side[0]}">${esc(pp.gold)}</span>`, sub);
+  } else {
+    const buffs = [];
+    const tag = (x, n) => `<span class="${x.side[0]}">${esc(code(x.side))}</span> ${n} ${mmss(x.until - gt)}`;
+    if (G.t.elderBuff && G.t.elderBuff.until > gt) buffs.push(tag(G.t.elderBuff, 'Ancestral'));
+    card('Buff activo', buffs[0] || '—', buffs.length ? 'mientras siga vivo' : 'ninguno');
+  }
   const inh = G.t.inhibs.filter(i => i.until > gt).sort((x, y) => x.until - y.until);
   const inhTxt = i => `<span class="${i.side === 'blue' ? 'r' : 'b'}">${esc(code(i.side === 'blue' ? 'red' : 'blue'))}</span> vuelve en ${mmss(i.until - gt)}`;
   card(`${oi('inhibitor', 14)} Inhibidores`, inh.length ? inhTxt(inh[0]) : '—', inh.length > 1 ? inh.slice(1).map(inhTxt).join(' · ') : inh.length ? 'abierto' : 'todos en pie');

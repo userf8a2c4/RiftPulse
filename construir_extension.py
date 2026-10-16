@@ -20,7 +20,7 @@ open(os.path.join(ext, 'panel.js'), 'w', encoding='utf-8').write(m.group(1))
 
 manifest = {
     "manifest_version": 3,
-    "name": "Worlds en vivo",
+    "name": "RiftPulse",
     "version": "1.0",
     "description": "Panel lateral con predicciones, copa, historial y Pick'Em de Worlds 2026.",
     "permissions": ["sidePanel"],
@@ -29,7 +29,7 @@ manifest = {
         "https://ddragon.leagueoflegends.com/*", "https://sb2frontend-altenar2.biahosted.com/*",
         "https://static.lolesports.com/*"
     ],
-    "action": {"default_title": "Abrir Worlds en vivo"},
+    "action": {"default_title": "Abrir RiftPulse"},
     "side_panel": {"default_path": "panel.html"},
     "background": {"service_worker": "background.js"},
     "icons": {"128": "icon128.png"}

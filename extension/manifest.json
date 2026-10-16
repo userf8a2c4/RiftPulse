@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Worlds en vivo",
+  "name": "RiftPulse",
   "version": "1.0",
   "description": "Panel lateral con predicciones, copa, historial y Pick'Em de Worlds 2026.",
   "permissions": [
@@ -14,7 +14,7 @@
     "https://static.lolesports.com/*"
   ],
   "action": {
-    "default_title": "Abrir Worlds en vivo"
+    "default_title": "Abrir RiftPulse"
   },
   "side_panel": {
     "default_path": "panel.html"
