@@ -1,0 +1,35 @@
+WORLDS EN VIVO — PANEL LATERAL DEL NAVEGADOR
+============================================
+
+Pone "Worlds en vivo" fijo en el panel derecho del navegador, para tenerlo al
+lado mientras ve el stream del Mundial en la pestaña principal.
+
+Sirve en Brave, Chrome o Edge (versiones recientes).
+
+INSTALAR (una sola vez)
+-----------------------
+1. Abra la pagina de extensiones del navegador:
+   - Brave:  brave://extensions
+   - Chrome: chrome://extensions
+   - Edge:   edge://extensions
+2. Active, arriba a la derecha, el "Modo de desarrollador" (Developer mode).
+3. Clic en "Cargar descomprimida" (Load unpacked).
+4. Seleccione ESTA carpeta:
+   ...\worlds-en-vivo\extension
+5. Aparece "Worlds en vivo" en la lista. Fijela en la barra (icono de pieza de
+   rompecabezas -> alfiler) para tenerla a mano.
+
+USAR
+----
+1. Abra el stream del Mundial en una pestana normal.
+2. Clic en el icono azul "Worlds en vivo": se abre el panel a la derecha, con
+   todo el sistema (predicciones, copa, historial, Pick'Em).
+
+ACTUALIZAR
+----------
+Si cambia algo de la pagina (index.html), haga doble clic en
+"actualizar-extension.bat" (en la carpeta de arriba) y luego, en la pagina de
+extensiones, toque el boton de recargar de "Worlds en vivo".
+
+Nota: la extension no lee ni envia nada de ninguna cuenta. Solo muestra el
+sistema al lado del stream. No esta afiliada a Riot Games.
