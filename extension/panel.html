@@ -71,6 +71,7 @@ td{padding:5px 4px;border-top:1px solid var(--line);vertical-align:middle}
 .evs{list-style:none;margin:0;padding:0;height:220px;overflow:auto}
 .evs li{padding:3px 0;border-top:1px solid var(--line);font-size:13px}
 .evs .t{color:var(--muted);font-variant-numeric:tabular-nums;display:inline-block;width:46px}
+.a-ev{display:flex;flex-direction:column}.a-ev .evs{flex:1 1 auto;height:auto;min-height:0}
 .ag{list-style:none;margin:0;padding:0}
 .ag li{display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-top:1px solid var(--line);font-size:13px}
 .ag .w{color:var(--muted);white-space:nowrap}
@@ -83,9 +84,13 @@ td{padding:5px 4px;border-top:1px solid var(--line);vertical-align:middle}
 .status.err{color:var(--warn)}
 .inicio .pm{white-space:normal}
 table.fiab td{white-space:normal}table.fiab td:first-child{text-align:left}#fiab{min-height:120px}
-.inicio{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:8px}.inicio .wide{grid-column:span 2}
-@media (max-width:1100px){.inicio{grid-template-columns:repeat(2,minmax(0,1fr))}}@media (max-width:700px){.inicio{grid-template-columns:minmax(0,1fr)}.inicio .wide{grid-column:auto}}
-.inicio .card{height:270px;display:flex;flex-direction:column;overflow:hidden}.iv-top{display:flex;align-items:center;gap:8px;font-size:18px;margin-bottom:8px;flex-wrap:wrap}
+.inicio{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:8px}
+.inicio .hero{grid-column:1 / -1}.inicio .mid{height:252px}.inicio .foot{height:150px}
+.hero-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 18px;align-items:start}
+.iv-pp{font-size:13px;font-weight:700;margin-top:7px}
+@media (max-width:1100px){.inicio{grid-template-columns:repeat(2,minmax(0,1fr))}.inicio .hero{grid-column:1 / -1}}
+@media (max-width:700px){.inicio{grid-template-columns:minmax(0,1fr)}.inicio .hero,.inicio .mid,.inicio .foot{grid-column:auto;height:auto}.hero-grid{grid-template-columns:1fr}}
+.inicio .card{display:flex;flex-direction:column;overflow:hidden}.iv-top{display:flex;align-items:center;gap:8px;font-size:18px;margin-bottom:8px;flex-wrap:wrap}
 .iv-sc{font-size:24px;font-weight:800;margin:0 6px}.iv-st{font-size:13px;margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .iv-bar{display:grid;grid-template-columns:70px 1fr 44px;gap:6px;align-items:center;font-size:13px;margin-top:4px}.iv-bar>div{background:var(--panel2);height:8px;border-radius:3px}.iv-bar>div>div{height:8px;border-radius:3px;background:var(--gold)}.iv-bar>span:last-child{text-align:right}
 .ini-go{margin-top:auto;align-self:flex-start;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:5px 10px;font:inherit;font-size:13px;cursor:pointer}.ini-go:hover{border-color:var(--blue)}
@@ -96,6 +101,10 @@ table.odds td.num{text-align:right;font-variant-numeric:tabular-nums}
 .pk2{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin:12px 0 5px}
 .reasons.r3{height:62px;margin-top:6px}
 .cmp{height:46px;overflow:hidden;font-size:13px;margin-top:8px;padding-top:8px;border-top:1px solid var(--line)}
+.wincond{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:4px 0 2px}
+.wincond ul{margin:3px 0 0;padding:0;list-style:none}
+.wincond li{font-size:12px;color:var(--muted);margin:3px 0;padding-left:11px;position:relative;line-height:1.3}
+.wincond li::before{content:"›";position:absolute;left:1px;color:var(--gold)}
 .player{display:flex;align-items:center;gap:8px;margin-top:8px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 12px;height:52px}
 .player.off{opacity:.45;pointer-events:none}
 .player button,.player select{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font:inherit;font-size:13px;cursor:pointer;white-space:nowrap}
@@ -403,13 +412,13 @@ details.det summary::before{content:'▸ ';}details.det[open] summary::before{co
   </div>
   <div id="vistaInicio" hidden>
     <div class="inicio">
-      <section class="card wide" id="iniVivo"></section>
-      <section class="card" id="iniBet"></section>
-      <section class="card" id="iniCopa"></section>
-      <section class="card" id="iniRes"></section>
-      <section class="card" id="iniAgenda"></section>
-      <section class="card" id="iniDatos"></section>
-      <section class="card wide" id="iniFiab"></section>
+      <section class="card hero" id="iniVivo"></section>
+      <section class="card mid" id="iniCopa"></section>
+      <section class="card mid" id="iniBet"></section>
+      <section class="card mid" id="iniFiab"></section>
+      <section class="card foot" id="iniRes"></section>
+      <section class="card foot" id="iniAgenda"></section>
+      <section class="card foot" id="iniDatos"></section>
     </div>
   </div>
   <div id="vistaPickem" hidden>

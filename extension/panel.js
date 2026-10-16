@@ -325,7 +325,7 @@ function processFrame(f) {
   if (f.gameState === 'finished') {
     const wasEnded = G.ended;
     G.ended = true; ENDS[G.id] = gt;
-    if (!wasEnded && !REPLAY && !PIN) confirmSeries();  // refresca el marcador de la serie sin esperar al ciclo de 30 s
+    if (!wasEnded && !REPLAY && !PIN) { confirmSeries(); saveEndedGame(G.id); }  // marcador al instante + guardar el análisis en el Historial
   }
 }
 
@@ -438,6 +438,18 @@ async function confirmSeries() {
     if (token !== serieEnd || !M || !G || !G.ended || REPLAY || PIN) return;
     await tickSeries();
     if (total() > before) return;  // el feed ya sumó el juego al marcador
+  }
+}
+// Al terminar un juego, reconstruye y guarda su análisis en el Historial (localStorage) para que no se pierda aunque el feed deje de servirlo.
+const SAVED = {};
+async function saveEndedGame(gameId) {
+  if (SAVED[gameId]) return;
+  for (const wait of [3000, 12000, 30000, 60000]) {
+    await new Promise(r => setTimeout(r, wait));
+    try {
+      const S = await histGame(gameId);  // histGame cachea y persiste en 'hist2:' cuando el juego está completo (done)
+      if (S && S.done) { SAVED[gameId] = true; if (!$('#vistaHist').hidden) renderHistList(); return; }
+    } catch (e) { /* el feed aún no cierra el juego: se reintenta */ }
   }
 }
 
@@ -600,6 +612,20 @@ function predBar(p, cb, cr, small) {
 }
 const reasonsList = parts => parts.slice(0, 3).map(x => `<li><b class="${x.z > 0 ? 'b' : 'r'}">▲ ${esc(code(x.z > 0 ? 'blue' : 'red'))}</b> ${esc(x.txt)}</li>`).join('') || '<li class="pm">Sin factores claros.</li>';
 
+// Condiciones de victoria: qué necesita cada equipo según su draft (curva, daño, frontline) y su nivel (Elo).
+function winConditions(D, side, favSide) {
+  const t = D[side], out = [];
+  if (t.scale >= 0.03) out.push('Alargar el juego: su draft es más fuerte en el late');
+  else if (t.scale <= -0.03) out.push('Cerrar temprano (antes del ~min 25): pierde fuerza si se alarga');
+  else out.push('Ritmo flexible: adaptarse a cómo evoluciona el mapa');
+  if (!t.front.length) out.push('Pelear desde atrás: sin tanque, evitar iniciaciones del rival');
+  else if (t.ad >= 0.8) out.push('Forzar antes de que el rival compre armadura (daño casi todo físico)');
+  else if (t.ad <= 0.2) out.push('Presionar antes de la resistencia mágica (daño casi todo mágico)');
+  else if (favSide && favSide !== side) out.push('Robar objetivos y forzar el caos para compensar el nivel');
+  else { const c = t.list.filter(x => x.wr != null).sort((a, b) => (b.wr + b.pres) - (a.wr + a.pres))[0]; out.push(c ? `Dar recursos a ${c.name} (${pct(c.wr)} victorias en el pro)` : 'Controlar los objetivos del mapa'); }
+  return out;
+}
+
 function renderProb() {
   const el = $('#prob');
   if (!G || !G.meta) { el.innerHTML = '<div class="empty">Aparece cuando cargan los campeones (al iniciar el juego).</div>'; return; }
@@ -624,6 +650,9 @@ function renderProb() {
     <div class="pk2">Antes del juego · fuerza, lado y draft</div>
     ${pre ? predBar(pre.p, cb, cr, true) : '<div class="probbar sm"></div>'}
     <ul class="reasons r3">${pre ? reasonsList(pre.parts) : '<li class="pm">Calculando la fuerza de los equipos…</li>'}</ul>
+    ${pre && G.draft ? `<div class="pk2">Condiciones de victoria</div><div class="wincond">
+      <div><b class="b">${esc(cb)}</b><ul>${winConditions(G.draft, 'blue', pre.elo ? (pre.p >= 0.5 ? 'blue' : 'red') : null).map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>
+      <div><b class="r">${esc(cr)}</b><ul>${winConditions(G.draft, 'red', pre.elo ? (pre.p >= 0.5 ? 'blue' : 'red') : null).map(x => `<li>${esc(x)}</li>`).join('')}</ul></div></div>` : ''}
     <div class="cmp">${cmp}</div>`;
 }
 
@@ -1421,13 +1450,27 @@ function renderInicio() {
     const tim = [];
     if (G.t.dragon) tim.push(`${G.t.dragon.elder ? 'Ancestral' : 'Dragón'} ${G.t.dragon.at > gt ? 'en ' + mmss(G.t.dragon.at - gt) : 'disponible'}`);
     tim.push('Barón ' + (G.t.baron ? (G.t.baron.at > gt ? 'en ' + mmss(G.t.baron.at - gt) : 'disponible') : 'sin tomar'));
-    if (G.t.baronBuff && G.t.baronBuff.until > gt) tim.push(`buff de Barón ${code(G.t.baronBuff.side)} ${mmss(G.t.baronBuff.until - gt)}`);
+    const favSide = G.pre && G.pre.elo ? (G.pre.p >= 0.5 ? 'blue' : 'red') : null;
+    const wc = G.pre && G.draft ? `<div class="pk2">Condiciones de victoria</div><div class="wincond">
+        <div><b class="b">${esc(cb)}</b><ul>${winConditions(G.draft, 'blue', favSide).map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>
+        <div><b class="r">${esc(cr)}</b><ul>${winConditions(G.draft, 'red', favSide).map(x => `<li>${esc(x)}</li>`).join('')}</ul></div></div>` : '';
+    const pp = baronPlay(gt);
     h += `<div class="iv-top">${logoT(A)}<b>${esc(A.code)}</b><span class="iv-sc">${(A.result || {}).gameWins ?? 0} – ${(B.result || {}).gameWins ?? 0}</span><b>${esc(B.code)}</b>${logoT(B)}
-        <span class="pm">· ${esc(M.block || '')} · Juego ${n} · ${G.ended ? 'terminado' : 'min ' + Math.floor(gt / 60)}</span></div>
-      <div class="betrow"><span class="pm">Antes del juego</span>${G.pre ? predBar(G.pre.p, cb, cr, true) : '<div class="probbar sm"></div>'}</div>
-      <div class="betrow"><span class="pm">${G.ended ? 'Al final' : 'Ahora'}</span>${predBar(G.wp.p, cb, cr, true)}</div>
-      <div class="iv-st">Kills <b>${b.totalKills}–${r.totalKills}</b> · Oro <b class="${gd >= 0 ? 'b' : 'r'}">${esc(gd >= 0 ? cb : cr)} +${k1(Math.abs(gd))}</b> · Torres <b>${b.towers}–${r.towers}</b> · Dragones <b>${b.dragons.length}–${r.dragons.length}</b> · Barones <b>${b.barons}–${r.barons}</b></div>
-      <div class="pm iv-st">${esc(tim.join(' · '))}</div>${go('partido', '▶ Ver el partido')}`;
+        <span class="badge ${G.ended ? 'end' : 'live'}">${G.ended ? 'TERMINADO' : 'EN VIVO'}</span><span class="pm">· ${esc(M.block || '')} · Juego ${n} · ${G.ended ? 'final' : 'min ' + Math.floor(gt / 60)}</span></div>
+      <div class="hero-grid">
+        <div>
+          <div class="betrow"><span class="pm">Antes del juego</span>${G.pre ? predBar(G.pre.p, cb, cr, true) : '<div class="probbar sm"></div>'}</div>
+          <div class="betrow"><span class="pm">${G.ended ? 'Al final' : 'Ahora'}</span>${predBar(G.wp.p, cb, cr, true)}</div>
+          ${wc}
+        </div>
+        <div>
+          <div class="iv-st">Kills <b>${b.totalKills}–${r.totalKills}</b> · Oro <b class="${gd >= 0 ? 'b' : 'r'}">${esc(gd >= 0 ? cb : cr)} +${k1(Math.abs(gd))}</b></div>
+          <div class="iv-st">Torres <b>${b.towers}–${r.towers}</b> · Dragones <b>${b.dragons.length}–${r.dragons.length}</b> · Barones <b>${b.barons}–${r.barons}</b></div>
+          <div class="iv-st pm">${oi('baron', 13)} ${esc(tim.join(' · '))}</div>
+          ${pp ? `<div class="iv-pp"><span class="${pp.side[0]}">${oi('baron', 13)} Powerplay ${esc(code(pp.side))}: ${esc(pp.gold)}</span>${pp.chips.length ? ` <span class="pm">· ${esc(pp.chips.join(' · '))}</span>` : ''}</div>` : ''}
+        </div>
+      </div>
+      ${go('partido', '▶ Ver el partido')}`;
   } else if (M) h += `<div class="iv-top"><b>${esc(M.teams.map(t => t.code).join(' vs '))}</b> <span class="pm">· draft / esperando que empiece el juego</span></div>${go('partido', '▶ Ver el partido')}`;
   else if (NEXT && NEXT.e) {
     const [A, B] = NEXT.e.match.teams, bo = NEXT.e.match.strategy.count, ps = probSerie(A.code, B.code, bo);
