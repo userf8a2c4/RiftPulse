@@ -519,7 +519,10 @@ function renderHead() {
   }
   const n = G ? (M.games.find(g => g.id === G.id) || {}).number : null;
   $('#subtitulo').textContent = [M.league && M.league.name, M.block, M.strategy && 'Mejor de ' + M.strategy.count, n && 'Juego ' + n, (REPLAY || PIN) && 'REPETICIÓN'].filter(Boolean).join(' · ');
-  if (!G || G.waiting || !G.last) { st.textContent = 'DRAFT / ESPERANDO'; st.className = 'badge'; $('#reloj').textContent = '—'; return; }
+  if (!G || G.waiting || !G.last) {
+    const live = G && M && (M.games.find(g => g.id === G.id) || {}).state === 'inProgress';
+    st.textContent = live ? 'EN VIVO · SIN FEED' : 'DRAFT / ESPERANDO'; st.className = 'badge' + (live ? ' pause' : ''); $('#reloj').textContent = '—'; return;
+  }
   const gs = G.last && G.last.gameState;
   st.textContent = G.ended ? 'TERMINADO' : gs === 'paused' ? 'PAUSA' : 'EN VIVO';
   st.className = 'badge ' + (G.ended ? 'end' : gs === 'paused' ? 'pause' : 'live');
@@ -540,6 +543,44 @@ function teamBlock(side) {
   return `<div class="team ${side === 'red' ? 'r' : ''}">${t.image ? `<img src="${esc(https(t.image))}" alt="">` : ''}<div><div class="tcode ${side[0]}">${esc(t.code)}</div><div class="trec">${esc(r)}</div></div></div>`;
 }
 
+// Entre mapas: carga el análisis de los juegos ya jugados de la serie (si falta) para poder resumirlos.
+const SR_LOAD = {};
+function ensureSeriesGames(ids) {
+  for (const id of ids) {
+    if (HI.cache[id] || SR_LOAD[id]) continue;
+    let cached = null; try { cached = JSON.parse(store('hist2:' + id) || 'null'); } catch (e) {}
+    if (cached) { HI.cache[id] = cached; continue; }
+    SR_LOAD[id] = true;
+    histGame(id).then(() => { if (!FREEZE) renderScore(); }).catch(() => {}).finally(() => { delete SR_LOAD[id]; });
+  }
+}
+// Resumen de la serie para la pantalla previa/entre juegos: marcador, probabilidad de serie y cada mapa jugado.
+function seriesRecap() {
+  if (!M || !M.teams || M.teams.length < 2) return '';
+  const [A, B] = M.teams, bo = (M.strategy || {}).count || 1, need = Math.ceil(bo / 2);
+  const wa = (A.result || {}).gameWins || 0, wb = (B.result || {}).gameWins || 0, op = ourProbs();
+  const done = M.games.filter(g => g.state === 'completed').sort((x, y) => x.number - y.number);
+  ensureSeriesGames(done.map(g => g.id));
+  const tByMeta = (meta, side) => M.teams.find(t => t.id === meta[side + 'TeamMetadata'].esportsTeamId) || {code: '?'};
+  const row = g => {
+    let S = HI.cache[g.id]; if (!S) { try { S = JSON.parse(store('hist2:' + g.id) || 'null'); } catch (e) {} }
+    if (!S || !S.win) return `<div class="sr-g"><b>Juego ${g.number}</b> <span class="pm">· cargando resumen…</span></div>`;
+    const wt = tByMeta(S.meta, S.win), b = S.final.blueTeam, r = S.final.redTeam, gd = Math.abs(b.totalGold - r.totalGold);
+    const fav = pregame(S.meta, analyzeDraft(S.meta), tByMeta(S.meta, 'blue').code, tByMeta(S.meta, 'red').code).p >= 0.5 ? 'blue' : 'red', ok = fav === S.win;
+    return `<div class="sr-g"><b>Juego ${g.number}</b> ganó <b class="${S.win[0]}">${esc(wt.code)}</b>
+      <span class="pm">· ${b.totalKills}–${r.totalKills} kills · ${k1(gd)} oro · ${mmss(S.dur)}</span>
+      <span class="vtag ${ok ? 'hit' : 'miss'}">${ok ? 'acertado' : 'sorpresa'}</span></div>`;
+  };
+  const punto = bo > 1 && (wa === need - 1 || wb === need - 1), lead = wa === wb ? null : (wa > wb ? A : B);
+  const estado = wa === wb ? `empatada ${wa}–${wb}` : `${esc(lead.code)} adelante ${Math.max(wa, wb)}–${Math.min(wa, wb)}`;
+  return `<div class="srec">
+    <div class="sr-h"><b class="b">${esc(A.code)}</b> <span class="iv-sc">${wa}–${wb}</span> <b class="r">${esc(B.code)}</b> <span class="pm">· Mejor de ${bo} · ${estado}</span></div>
+    ${op ? `<div class="betrow"><span class="pm">Serie (modelo)</span>${predBar(op.serie, A.code, B.code, true)}</div>` : ''}
+    <div class="pm" style="margin:5px 0 2px">El que gane ${need} avanza${punto ? ` · punto de serie para ${esc(lead.code)}` : ''}</div>
+    <div class="sr-list">${done.length ? done.map(row).join('') : '<div class="pm">Aún no hay mapas jugados.</div>'}</div>
+  </div>`;
+}
+
 function renderScore() {
   const el = $('#marcador');
   if (!M) { el.innerHTML = `<div class="empty">${esc(nextText())}</div>`; return; }
@@ -549,7 +590,17 @@ function renderScore() {
     return `<div class="sc-team ${side === 'red' ? 'rt' : ''}">${t.image ? `<img src="${esc(https(t.image))}" alt="">` : ''}<div><div class="sc-code ${side[0]}">${esc(t.code)}</div>
       <div class="pm">${side === 'blue' ? 'lado azul' : 'lado rojo'}${rc ? ` · ${rc.wins}-${rc.losses} en el torneo` : ''}</div></div></div>`;
   };
-  if (!G || !G.last) { el.innerHTML = `<div class="sc-hero">${tb('blue')}<div class="sc-mid"><div class="pm">Esperando que empiece el juego (draft)</div></div>${tb('red')}</div>`; return; }
+  if (!G || !G.last) {
+    const g = G ? (M.games.find(x => x.id === G.id) || {}) : {};
+    const note = g.state === 'inProgress'
+      ? `<b>Juego ${g.number || ''} en vivo</b> <span class="pm">· lolesports aún no transmite su feed de datos · reintentando (suele tardar al empezar cada juego)</span>`
+      : 'Esperando que empiece el juego (draft)';
+    if (M.games.some(x => x.state === 'completed'))
+      el.innerHTML = `<div class="srwrap"><div class="pm" style="margin-bottom:8px;white-space:normal">${note}</div>${seriesRecap()}</div>`;
+    else
+      el.innerHTML = `<div class="sc-hero">${tb('blue')}<div class="sc-mid"><div class="pm">${note}</div></div>${tb('red')}</div>`;
+    return;
+  }
   const b = G.last.blueTeam, r = G.last.redTeam;
   const chips = t => t.dragons.map(d => oi(d, 20)).join('') || '<span class="pm">—</span>';
   el.innerHTML = `<div class="sc-hero">${tb('blue')}<div class="sc-mid"><div class="sc-k"><span class="b">${b.totalKills}</span><span class="hx-dash">–</span><span class="r">${r.totalKills}</span></div>
@@ -1179,6 +1230,14 @@ function renderHistList() {
 }
 
 document.addEventListener('click', async ev => {
+  const dl = ev.target.closest('[data-dl]');
+  if (dl) {
+    if (!HI.cur) return;
+    const x = buildGameExport(HI.cur.S, HI.cur.m);
+    if (dl.dataset.dl === 'csv') expDownload(x.base + '_oro.csv', x.csv, 'text/csv');
+    else expDownload(x.base + '.json', x.json, 'application/json');
+    return;
+  }
   const pb = ev.target.closest('[data-pin-g]');
   if (pb) { pinGame(pb.dataset.pinM, pb.dataset.pinG); return; }
   const gb = ev.target.closest('#histLista [data-g]');
@@ -1235,7 +1294,47 @@ function histPreds(S, B, R) {
   return {pre, pts};
 }
 
+// Dispara la descarga de un archivo generado en el navegador (datos del propio usuario).
+function expDownload(name, text, mime) {
+  try {
+    const blob = new Blob([text], {type: (mime || 'text/plain') + ';charset=utf-8'}), url = URL.createObjectURL(blob), a = document.createElement('a');
+    a.href = url; a.download = name; document.body.appendChild(a); a.click();
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1500);
+  } catch (e) { alert('No se pudo descargar: ' + e.message); }
+}
+// Arma la exportación de un juego: JSON completo + CSV de la línea de tiempo de oro.
+function buildGameExport(S, m) {
+  const team = side => (m.teams || []).find(t => t.id === S.meta[side + 'TeamMetadata'].esportsTeamId) || {code: side === 'blue' ? 'AZUL' : 'ROJO'};
+  const B = team('blue'), R = team('red'), fb = S.final.blueTeam, fr = S.final.redTeam, T = {blue: B, red: R};
+  const num = ((m.games || []).find(g => g.id === S.id) || {}).number || '';
+  const cn = id => ((champs || {})[id] || {}).name || id, pn = x => (x.summonerName || '').replace(/^\S+\s/, '');
+  const live = Object.fromEntries([...fb.participants, ...fr.participants].map(x => [x.participantId, x]));
+  const draftSide = side => S.meta[side + 'TeamMetadata'].participantMetadata.map(p => {
+    const st = CHAMP[p.championId] || {};
+    return {jugador: pn(p), rol: p.role, campeon: cn(p.championId), winrate_pro: st.wr ?? null, presencia_pro: st.pres ?? null};
+  });
+  const players = ['blue', 'red'].flatMap(side => S.meta[side + 'TeamMetadata'].participantMetadata.map(p => {
+    const w = live[p.participantId] || {}, d = S.details[p.participantId] || {};
+    return {equipo: T[side].code, jugador: pn(p), campeon: cn(p.championId), rol: p.role, kills: w.kills, muertes: w.deaths, asistencias: w.assists, cs: w.creepScore, oro: w.totalGold, nivel: w.level, dano_share: d.championDamageShare ?? null};
+  }));
+  const ts = t => ({oro: t.totalGold, kills: t.totalKills, torres: t.towers, inhibidores: t.inhibitors, barones: t.barons, dragones: t.dragons});
+  const {pre, pts} = histPreds(S, B, R);
+  const json = {
+    torneo: 'Worlds 2026', juego: num, serie: `${B.code} vs ${R.code}`, equipo_azul: B.code, equipo_rojo: R.code,
+    ganador: T[S.win].code, duracion_segundos: Math.round(S.dur), parche: S.meta.patchVersion,
+    prediccion_modelo: {prob_azul_antes: +pre.p.toFixed(4), por_momento: pts.map(x => ({momento: x.label, favorito: T[x.fav].code, prob: +x.pf.toFixed(4), acerto: x.ok}))},
+    draft: {azul: draftSide('blue'), rojo: draftSide('red')},
+    final: {azul: ts(fb), rojo: ts(fr)}, jugadores: players,
+    linea_tiempo_oro: S.samples.map(s => ({segundo: Math.round(s.gt), oro_azul_menos_rojo: s.diff})),
+    eventos: S.events.map(e => ({segundo: Math.round(e.gt), lado: T[e.side] ? T[e.side].code : e.side, tipo: e.kind, texto: e.txt}))
+  };
+  const csv = ['minuto,segundo,oro_azul_menos_rojo', ...S.samples.map(s => `${Math.floor(s.gt / 60)}:${String(Math.floor(s.gt % 60)).padStart(2, '0')},${Math.round(s.gt)},${s.diff}`)].join('\n');
+  const base = `worlds2026_${B.code}-${R.code}_juego${num || S.id}`.replace(/[^A-Za-z0-9_\-]/g, '');
+  return {json: JSON.stringify(json, null, 2), csv, base};
+}
+
 function renderHistGame(S, m) {
+  HI.cur = {S, m};  // para los botones de descarga
   const team = side => m.teams.find(t => t.id === S.meta[side + 'TeamMetadata'].esportsTeamId) || {code: side === 'blue' ? 'AZUL' : 'ROJO'};
   const B = team('blue'), R = team('red'), fb = S.final.blueTeam, fr = S.final.redTeam, T = {blue: B, red: R};
   const num = (m.games.find(g => g.id === S.id) || {}).number;
@@ -1297,6 +1396,8 @@ function renderHistGame(S, m) {
         <div class="pm">kills · duración ${mmss(S.dur)}${ev ? ' · ' + esc(ev.blockName || '') + ' · ' + fmtDate(ev.startTime) : ''}</div></div>
       ${side('red')}</div>
     <div class="hx-actions">${matchId ? `<button class="hopen" data-pin-m="${esc(matchId)}" data-pin-g="${esc(S.id)}">▶ Ver la repetición</button>` : ''}
+      <button class="hopen" data-dl="json" title="Todos los datos del juego en JSON">⬇ Datos (JSON)</button>
+      <button class="hopen" data-dl="csv" title="Línea de tiempo de oro en CSV (Excel)">⬇ Oro por minuto (CSV)</button>
       ${mvp ? `<span class="hx-mvpcard">⭐ Jugador destacado: <b>${esc(pname(mvp.x))}</b> (${esc(champName(mvp.x.championId))}) · ${mvp.w.kills}/${mvp.w.deaths}/${mvp.w.assists} · ${Math.round((mvp.d.championDamageShare || 0) * 100)}% del daño</span>` : ''}</div>
     ${veredicto}
     <div class="hx-grid">
@@ -1471,7 +1572,16 @@ function renderInicio() {
         </div>
       </div>
       ${go('partido', '▶ Ver el partido')}`;
-  } else if (M) h += `<div class="iv-top"><b>${esc(M.teams.map(t => t.code).join(' vs '))}</b> <span class="pm">· draft / esperando que empiece el juego</span></div>${go('partido', '▶ Ver el partido')}`;
+  } else if (M) {
+    const g = G ? (M.games.find(x => x.id === G.id) || {}) : {};
+    const note = g.state === 'inProgress'
+      ? `<b>Juego ${g.number || ''} en vivo</b> <span class="pm">· lolesports aún no transmite su feed · reintentando</span>`
+      : 'Draft / esperando que empiece el juego';
+    if (M.games.some(x => x.state === 'completed'))
+      h += `<div class="pm" style="margin-bottom:8px;white-space:normal">${note}</div>${seriesRecap()}${go('partido', '▶ Ver el partido')}`;
+    else
+      h += `<div class="iv-top"><b>${esc(M.teams.map(t => t.code).join(' vs '))}</b> <span class="pm">· ${note}</span></div>${go('partido', '▶ Ver el partido')}`;
+  }
   else if (NEXT && NEXT.e) {
     const [A, B] = NEXT.e.match.teams, bo = NEXT.e.match.strategy.count, ps = probSerie(A.code, B.code, bo);
     h += `<div class="pm">No hay partido en vivo. Próximo partido:</div>
@@ -1605,11 +1715,43 @@ function renderPickem() {
 }
 
 // Fondo de la vista Partido: más azul cuanto más favorito el lado azul, más rojo cuanto más el rojo.
+// Ciudad aérea OSCURA cuya densidad emula la Grieta: edificios agolpados en las dos bases y en los tres carriles,
+// colocación orgánica (sin cuadrícula perfecta), y el río como canal diagonal despejado. Generada 100% en código.
+function riftCity() {
+  let s = 20260130; const rnd = () => (s = (s * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  const Bx = 12, By = 88, Rx = 88, Ry = 12, SQ = Math.SQRT2;
+  const segD = (px, py, ax, ay, bx, by) => { const dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy; let t = L ? ((px - ax) * dx + (py - ay) * dy) / L : 0; t = Math.max(0, Math.min(1, t)); return Math.hypot(px - (ax + t * dx), py - (ay + t * dy)); };
+  const midD = (x, y) => Math.abs(x + y - 100) / SQ;                                       // carril central
+  const topD = (x, y) => Math.min(segD(x, y, Bx, By, Bx, Ry), segD(x, y, Bx, Ry, Rx, Ry)); // carril superior
+  const botD = (x, y) => Math.min(segD(x, y, Bx, By, Rx, By), segD(x, y, Rx, By, Rx, Ry)); // carril inferior
+  const laneD = (x, y) => Math.min(midD(x, y), topD(x, y), botD(x, y));
+  const riverD = (x, y) => Math.abs(x - y) / SQ;                                            // río (diagonal)
+  const baseD = (x, y) => Math.min(Math.hypot(x - Bx, y - By), Math.hypot(x - Rx, y - Ry));
+  let b = '';
+  for (let n = 0; n < 7000; n++) {                                     // colocación orgánica (puntos al azar, no una rejilla)
+    const x = rnd() * 100, y = rnd() * 100;
+    if (riverD(x, y) < 4.5) continue;                                  // el río queda despejado
+    const dens = Math.max(Math.max(0, 1 - laneD(x, y) / 9), Math.max(0, 1 - baseD(x, y) / 22));  // denso en carriles y bases
+    if (rnd() > 0.04 + dens * 0.85) continue;                          // la jungla casi vacía
+    const op = (0.03 + dens * 0.18 + rnd() * 0.04).toFixed(2);         // oscuro
+    const w = (0.8 + rnd() * 2).toFixed(1), h = (0.8 + rnd() * 2).toFixed(1), rot = (rnd() * 24 - 12).toFixed(0);
+    b += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w}" height="${h}" fill="#9db0d4" opacity="${op}" transform="rotate(${rot} ${x.toFixed(1)} ${y.toFixed(1)})"/>`;
+  }
+  const water = `<path d="M0 8 L92 100 L100 92 L8 0 Z" fill="#0b1d3a" opacity="0.55"/>`;
+  const beam = (d, w, op) => `<path d="${d}" fill="none" stroke="#e8eeff" stroke-width="${w}" opacity="${op}" filter="url(#g)"/>`;
+  const beams = beam(`M${Bx} ${By} L${Rx} ${Ry}`, 1, .22) + beam('M50 -4 L50 104', 0.8, .14);  // tenues haces de luz
+  const defs = '<defs><filter id="g" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="1.1"/></filter></defs>';
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="1100" viewBox="0 0 100 100">${defs}<rect width="100" height="100" fill="#060910"/>${b}${water}${beams}</svg>`;
+  return 'data:image/svg+xml;base64,' + btoa(svg);
+}
+function applyCity() { try { const c = $('#tinte .city'); if (c) c.style.backgroundImage = `url("${riftCity()}")`; } catch (e) {} }
+
+// El color del fondo se adapta a la probabilidad: el azul (abajo) sube y cubre más cuando el lado azul tiene más
+// probabilidad de ganar; el magenta (arriba) baja cuando gana el rojo. 50% = división al centro (neutro).
 function tinte() {
-  const on = !$('#vistaPartido').hidden && G && G.wp && G.meta, pb = on ? G.wp.p : 0.5;
-  const k = x => Math.sqrt(Math.max(0, Math.min(1, x))).toFixed(2);
-  $('#tinte .tb').style.opacity = on ? k((pb - 0.5) * 2) : 0;
-  $('#tinte .tr').style.opacity = on ? k((0.5 - pb) * 2) : 0;
+  const pb = (G && G.wp && G.meta) ? Math.max(0, Math.min(1, G.wp.p)) : 0.5;
+  const split = Math.round((0.12 + pb * 0.76) * 100);  // acota 12%–88% para que ambos colores siempre se insinúen
+  const g = $('#tinte .grad'); if (g) g.style.setProperty('--split', split + '%');
 }
 
 function setVista(v) {
@@ -1767,6 +1909,7 @@ async function pinGame(matchId, gameId) {
   await tickSchedule();
   loadCopa().then(() => { if (G && G.start && G.pre && !G.pre.elo) rebuild(); });
   const v0 = q.get('vista') || store('vista'); // ?vista=partido abre directo en esa pestaña
+  applyCity();  // fondo de ciudad aérea (se genera una vez)
   setVista(['inicio', 'partido', 'copa', 'hist', 'pickem'].includes(v0) ? v0 : 'inicio');
   if (q.get('hist')) { // ?vista=hist&hist=<partido>:<juego> abre ese resumen directo
     const [mid, gid] = q.get('hist').split(':');
