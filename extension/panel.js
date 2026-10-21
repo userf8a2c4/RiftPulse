@@ -469,6 +469,19 @@ function gtNow() {
   if (G.ended || G.last.gameState === 'paused') return G.gt;
   return G.gt + Math.max(0, Math.min(15000, dataTime() - G.lastTs)) / 1000;
 }
+// Cronómetro del Hero: tiempo de juego (sincronizado con el stream) o cuenta regresiva al próximo partido.
+function relojText(start) {
+  const ms = Date.parse(start) - Date.now();
+  if (ms <= 0) return '¡ya empieza!';
+  const s = Math.floor(ms / 1000), d = Math.floor(s / 86400), p = n => String(n).padStart(2, '0');
+  return (d ? d + 'd ' : '') + p(Math.floor(s % 86400 / 3600)) + ':' + p(Math.floor(s % 3600 / 60)) + ':' + p(s % 60);
+}
+function tickReloj() {
+  const el = document.getElementById('iniReloj');
+  if (!el) return;
+  const t = el.dataset.start ? relojText(el.dataset.start) : mmss(gtNow());
+  if (el.textContent !== t) el.textContent = t;  // solo escribe si cambió: evita el parpadeo
+}
 
 function render() {
   if (FREEZE) return;
@@ -657,6 +670,24 @@ function biggestSwing() {
   const evs = G.events.filter(e => e.gt >= best.a - 5 && e.gt <= best.b + 5 && e.kind !== 'tower').map(e => e.txt);
   return {...best, evs: [...new Set(evs)]};
 }
+// Giros clave: momentos donde la probabilidad dio un salto notable, con la causa (evento) más probable.
+function keyMoments(samples, events, maxN = 3) {
+  if (!samples || samples.length < 3) return [];
+  const sig = 0.09, out = [];  // salto mínimo de 9 puntos
+  let base = samples[0];
+  for (let i = 1; i < samples.length; i++) {
+    const dir = Math.sign(samples[i].p - base.p);
+    if (!dir || Math.abs(samples[i].p - base.p) < sig) continue;
+    let j = i;  // extiende mientras la ventaja siga creciendo en esa dirección (tolera ruido de 2 pts)
+    while (j + 1 < samples.length && (samples[j + 1].p - base.p) * dir >= (samples[j].p - base.p) * dir - 0.02) j++;
+    const end = samples[j], side = dir > 0 ? 'blue' : 'red';
+    const evs = (events || []).filter(e => e.gt >= base.gt - 8 && e.gt <= end.gt + 4 && e.side === side && e.kind !== 'tower');
+    const cause = evs.length ? [...new Set(evs.map(e => e.txt))].slice(0, 2).join(', ') : 'ventaja de oro y presión en el mapa';
+    out.push({a: base.gt, b: end.gt, d: end.p - base.p, side, cause});
+    base = end; i = j;
+  }
+  return out.sort((x, y) => Math.abs(y.d) - Math.abs(x.d)).slice(0, maxN).sort((x, y) => x.a - y.a);
+}
 function predBar(p, cb, cr, small) {
   const pb = Math.round(p * 100), pr = 100 - pb;
   return `<div class="probbar${small ? ' sm' : ''}"><div class="pb" style="width:${Math.min(86, Math.max(pb, 14))}%">${esc(cb)} ${pb}%</div><div class="pr" style="width:${Math.min(86, Math.max(pr, 14))}%">${pr}% ${esc(cr)}</div></div>`;
@@ -751,7 +782,10 @@ function chartSVG(S, E, cb, cr, withProb, uid) {
 function renderEvents() {
   const el = $('#eventos');
   if (!G || !G.events.length) { el.innerHTML = '<li class="pm">Sin eventos todavía.</li>'; return; }
-  el.innerHTML = G.events.slice().reverse().slice(0, 30).map(e => `<li><span class="t">${mmss(e.gt)}</span>${evIcon(e.kind)} <b class="${e.side[0]}">${esc(code(e.side))}</b> ${esc(e.txt)}</li>`).join('');
+  const km = keyMoments(G.samples, G.events);
+  const kmHtml = km.length ? '<li class="km-h">⚡ Giros clave · cuánto movió el pronóstico</li>' + km.map(m =>
+    `<li class="km"><span class="t">${mmss(m.b)}</span><b class="${m.side[0]}">▲ ${Math.round(Math.abs(m.d) * 100)} pts ${esc(code(m.side))}</b> <span class="pm">· ${esc(m.cause)}</span></li>`).join('') + '<li class="km-h">Bitácora</li>' : '';
+  el.innerHTML = kmHtml + G.events.slice().reverse().slice(0, 30).map(e => `<li><span class="t">${mmss(e.gt)}</span>${evIcon(e.kind)} <b class="${e.side[0]}">${esc(code(e.side))}</b> ${esc(e.txt)}</li>`).join('');
 }
 
 // Powerplay del Barón: cuánto amplía su ventaja el equipo mientras tiene el buff (oro neto + objetivos tomados).
@@ -1333,6 +1367,28 @@ function buildGameExport(S, m) {
   return {json: JSON.stringify(json, null, 2), csv, base};
 }
 
+// Resumen narrado de un juego terminado: en una o dos frases, qué pasó y por qué.
+function gameNarrative(S, B, R) {
+  const T = {blue: B, red: R}, win = S.win, winC = T[win].code, loseC = T[win === 'blue' ? 'red' : 'blue'].code;
+  const pre = pregame(S.meta, analyzeDraft(S.meta), B.code, R.code), fav = pre.p >= 0.5 ? 'blue' : 'red', expected = fav === win;
+  if (S.dur < 120 || !S.samples || S.samples.length < 3)  // datos incompletos del feed: solo lo seguro
+    return `<b class="${win[0]}">${esc(winC)}</b> venció a ${esc(loseC)}.${expected ? '' : ` Una sorpresa: el pronóstico favorecía a ${esc(T[fav].code)}.`}`;
+  const sgn = win === 'blue' ? 1 : -1;  // oro del ganador = diff * sgn
+  const s15 = S.samples.find(x => x.gt >= 900), early = s15 ? s15.diff * sgn : 0;
+  const finalGd = (S.final.blueTeam.totalGold - S.final.redTeam.totalGold) * sgn, dur = Math.round(S.dur / 60);
+  const barons = S.events.filter(e => e.kind === 'baron' && T[e.side].code === winC), lastBaron = barons[barons.length - 1];
+  const soul = S.events.find(e => (e.kind === 'elder' || (e.kind === 'dragon' && /ALMA/i.test(e.txt))) && T[e.side].code === winC);
+  let f1 = `<b class="${win[0]}">${esc(winC)}</b> venció a ${esc(loseC)} en ${dur} min`;
+  f1 += expected ? ', como anticipaba el modelo.' : `, una sorpresa: el pronóstico favorecía a ${esc(T[fav].code)}.`;
+  const como = [];
+  if (early > 2500) como.push('tomó el control desde la fase de líneas');
+  else if (early < -1500) como.push('remontó tras ir en desventaja temprana');
+  else como.push('se impuso en un juego parejo');
+  if (lastBaron) como.push(`el Barón del min ${Math.round(lastBaron.gt / 60)} le abrió el mapa`);
+  else if (soul) como.push('el control de dragones inclinó las peleas');
+  const cierre = finalGd >= 500 ? `cerró con <b>+${k1(finalGd)}</b> de oro` : finalGd <= -500 ? 'se impuso por objetivos pese al oro en contra' : 'lo definió en un final cerrado';
+  return `${f1} ${esc(winC)} ${como.join(' y ')}; ${cierre}.`;
+}
 function renderHistGame(S, m) {
   HI.cur = {S, m};  // para los botones de descarga
   const team = side => m.teams.find(t => t.id === S.meta[side + 'TeamMetadata'].esportsTeamId) || {code: side === 'blue' ? 'AZUL' : 'ROJO'};
@@ -1400,6 +1456,7 @@ function renderHistGame(S, m) {
       <button class="hopen" data-dl="csv" title="Línea de tiempo de oro en CSV (Excel)">⬇ Oro por minuto (CSV)</button>
       ${mvp ? `<span class="hx-mvpcard">⭐ Jugador destacado: <b>${esc(pname(mvp.x))}</b> (${esc(champName(mvp.x.championId))}) · ${mvp.w.kills}/${mvp.w.deaths}/${mvp.w.assists} · ${Math.round((mvp.d.championDamageShare || 0) * 100)}% del daño</span>` : ''}</div>
     ${veredicto}
+    <div class="hx-narr"><span class="hx-narr-i">📝</span><span>${gameNarrative(S, B, R)}</span></div>
     <div class="hx-grid">
       <section class="hx-sec"><h3>Comparación de equipos</h3><p class="hx-help">Quién dominó cada aspecto. El oro compra ítems; torres, dragones y barones son los objetivos del mapa.</p>${comp}</section>
       <section class="hx-sec"><h3>Cómo se desarrolló</h3><p class="hx-help">Diferencia de oro minuto a minuto: arriba va ganando ${esc(B.code)}, abajo ${esc(R.code)}.</p>
@@ -1540,10 +1597,26 @@ function salud(src, label) {
 }
 
 // ---------- Inicio: resumen de todo ----------
+// Forma reciente de un equipo: últimas series ganadas/perdidas (más reciente primero).
+function teamForm(code, n = 5) {
+  const out = [], done = schedule.filter(e => e.state === 'completed' && e.match.teams.some(t => t.code === code)).sort((a, b) => a.startTime < b.startTime ? 1 : -1);
+  for (const e of done) {
+    const t = e.match.teams.find(x => x.code === code), o = e.match.teams.find(x => x.code !== code);
+    if (!t || !o) continue;
+    out.push(((t.result || {}).gameWins || 0) > ((o.result || {}).gameWins || 0) ? 'W' : 'L');
+    if (out.length >= n) break;
+  }
+  return out;
+}
+// Solo reescribe la tarjeta si su contenido cambió: evita repintados/parpadeo en el ciclo de 2 s.
+const _iniCache = {};
+function setHtml(sel, html) { const el = $(sel); if (el && _iniCache[sel] !== html) { _iniCache[sel] = html; el.innerHTML = html; } }
 function renderInicio() {
   if ($('#vistaInicio').hidden) return;
-  const go = (v, t) => `<button class="ini-go" data-act="vista" data-arg="${v}">${t}</button>`;
+  if (!CB.loaded && !CB.loading) crystalBall();  // carga la Bola de Cristal (se cachea)
+  const go = (v, t, pri) => `<button class="ini-go${pri ? ' primary' : ''}" data-act="vista" data-arg="${v}">${t}</button>`;
   const logoT = t => t && t.image ? `<img src="${esc(https(t.image))}" alt="" style="width:34px;height:34px;object-fit:contain">` : '';
+  const formHtml = code => { const f = teamForm(code); return f.length ? f.map(r => `<span class="fm ${r === 'W' ? 'w' : 'l'}">${r}</span>`).join('') : '<span class="pm">sin historial</span>'; };
   let h = '<h2>En vivo ahora</h2>';
   if (M && G && G.meta && G.last && G.wp) {
     const b = G.last.blueTeam, r = G.last.redTeam, gd = b.totalGold - r.totalGold, gt = gtNow(), cb = code('blue'), cr = code('red');
@@ -1557,11 +1630,12 @@ function renderInicio() {
         <div><b class="r">${esc(cr)}</b><ul>${winConditions(G.draft, 'red', favSide).map(x => `<li>${esc(x)}</li>`).join('')}</ul></div></div>` : '';
     const pp = baronPlay(gt);
     h += `<div class="iv-top">${logoT(A)}<b>${esc(A.code)}</b><span class="iv-sc">${(A.result || {}).gameWins ?? 0} – ${(B.result || {}).gameWins ?? 0}</span><b>${esc(B.code)}</b>${logoT(B)}
-        <span class="badge ${G.ended ? 'end' : 'live'}">${G.ended ? 'TERMINADO' : 'EN VIVO'}</span><span class="pm">· ${esc(M.block || '')} · Juego ${n} · ${G.ended ? 'final' : 'min ' + Math.floor(gt / 60)}</span></div>
+        <span class="badge ${G.ended ? 'end' : 'live'}">${G.ended ? 'TERMINADO' : 'EN VIVO'}</span><span class="pm">· ${esc(M.block || '')} · Juego ${n}</span></div>
+      <div class="hero-clock"><span class="hc-t" id="iniReloj">${mmss(gt)}</span><span class="hc-l">${G.ended ? 'tiempo final del juego' : '⏱ tiempo de juego · sincronizado con el stream'}</span></div>
       <div class="hero-grid">
         <div>
-          <div class="betrow"><span class="pm">Antes del juego</span>${G.pre ? predBar(G.pre.p, cb, cr, true) : '<div class="probbar sm"></div>'}</div>
-          <div class="betrow"><span class="pm">${G.ended ? 'Al final' : 'Ahora'}</span>${predBar(G.wp.p, cb, cr, true)}</div>
+          <div class="betrow"><span>${G.ended ? 'Al final' : 'Ahora'}</span>${predBar(G.wp.p, cb, cr)}</div>
+          <div class="betrow betrow-xs"><span class="pm">Antes del juego</span>${G.pre ? predBar(G.pre.p, cb, cr, true) : '<div class="probbar sm"></div>'}</div>
           ${wc}
         </div>
         <div>
@@ -1571,44 +1645,84 @@ function renderInicio() {
           ${pp ? `<div class="iv-pp"><span class="${pp.side[0]}">${oi('baron', 13)} Powerplay ${esc(code(pp.side))}: ${esc(pp.gold)}</span>${pp.chips.length ? ` <span class="pm">· ${esc(pp.chips.join(' · '))}</span>` : ''}</div>` : ''}
         </div>
       </div>
-      ${go('partido', '▶ Ver el partido')}`;
+      ${go('partido', '▶ En vivo', true)}`;
   } else if (M) {
     const g = G ? (M.games.find(x => x.id === G.id) || {}) : {};
     const note = g.state === 'inProgress'
       ? `<b>Juego ${g.number || ''} en vivo</b> <span class="pm">· lolesports aún no transmite su feed · reintentando</span>`
       : 'Draft / esperando que empiece el juego';
     if (M.games.some(x => x.state === 'completed'))
-      h += `<div class="pm" style="margin-bottom:8px;white-space:normal">${note}</div>${seriesRecap()}${go('partido', '▶ Ver el partido')}`;
+      h += `<div class="pm" style="margin-bottom:8px;white-space:normal">${note}</div>${seriesRecap()}${go('partido', '▶ En vivo', true)}`;
     else
-      h += `<div class="iv-top"><b>${esc(M.teams.map(t => t.code).join(' vs '))}</b> <span class="pm">· ${note}</span></div>${go('partido', '▶ Ver el partido')}`;
+      h += `<div class="iv-top"><b>${esc(M.teams.map(t => t.code).join(' vs '))}</b> <span class="pm">· ${note}</span></div>${go('partido', '▶ En vivo', true)}`;
   }
   else if (NEXT && NEXT.e) {
     const [A, B] = NEXT.e.match.teams, bo = NEXT.e.match.strategy.count, ps = probSerie(A.code, B.code, bo);
-    h += `<div class="pm">No hay partido en vivo. Próximo partido:</div>
-      <div class="iv-top">${logoT(A)}<b>${esc(A.code)}</b><span class="iv-sc">vs</span><b>${esc(B.code)}</b>${logoT(B)}<span class="pm">· ${esc(NEXT.e.blockName || '')} · Bo${bo} · ${fmtDate(NEXT.e.startTime)}</span></div>
-      ${ps != null ? `<div class="betrow"><span class="pm">Sistema (serie)</span>${predBar(ps, A.code, B.code, true)}</div>` : ''}`;
+    const col = (t, side) => `<div class="nm-team ${side}"><img src="${t.image ? esc(https(t.image)) : ''}" alt="">
+      <div><div class="nm-code">${esc(t.code)}</div><div class="pm">${esc(C.reg[t.code] || '')}${C.loaded && C.r[t.code] != null ? ` · Elo ${Math.round(eloOf(t.code))}` : ''}</div><div class="nm-form">${formHtml(t.code)}</div></div></div>`;
+    const dayEvents = schedule.filter(e => e.state === 'unstarted').slice(0, 4);
+    h = `<div class="ini-head"><h2>Próximo partido</h2>${go('partido', '▶ En vivo', true)}</div><div class="nm-head">${col(A, 'l')}<div class="nm-vs"><div class="pm">${esc(NEXT.e.blockName || '')} · Bo${bo}</div><div class="nm-vsbig">VS</div><div class="pm">${fmtDate(NEXT.e.startTime)}</div>
+        <div class="hc-t" id="iniReloj" data-start="${esc(NEXT.e.startTime)}"></div><div class="hc-l">⏱ para el partido</div></div>${col(B, 'r')}</div>
+      ${ps != null ? `<div class="betrow"><span class="pm">Probabilidad de serie</span>${predBar(ps, A.code, B.code, true)}</div>` : ''}
+      <div class="pk2" style="margin-top:8px">Agenda</div><div class="ini-day">${dayEvents.map(e => `<span class="d"><b>${e.match.teams.map(t => esc(t.code)).join(' vs ')}</b> <span class="pm">${fmtDate(e.startTime).replace(/^\S+,?\s/, '')}</span></span>`).join('') || '<span class="pm">Sin próximos partidos.</span>'}</div>`;
   } else h += `<div class="pm">No hay partido en vivo. ${esc(nextText())}</div>`;
-  $('#iniVivo').innerHTML = h;
-  $('#iniBet').innerHTML = `<h2>🔮 Pick'Em</h2>` + pickemTeaser() + go('pickem', `Ver Pick'Em y Bola de Cristal`);
+  setHtml('#iniVivo', h); tickReloj();
+  // Bola de Cristal: campeón más elegido, mejor % de victorias y jugador con mejor KDA (de los juegos ya jugados).
+  const cb = cbStats();
+  let bola;
+  if (!cb.n) bola = `<div class="pm">${CB.loading ? 'Cargando los juegos ya jugados de Worlds…' : 'Se llena con cada juego de Worlds ya jugado.'}</div>`;
+  else {
+    const ch = Object.entries(cb.champ), mp = ch.slice().sort((a, b) => b[1].picks - a[1].picks)[0];
+    const bw = ch.filter(([, o]) => o.picks >= 3).sort((a, b) => b[1].wins / b[1].picks - a[1].wins / a[1].picks)[0] || mp;
+    const bk = Object.entries(cb.player).filter(([, o]) => o.g >= 2).sort((a, b) => (b[1].k + b[1].a) / Math.max(1, b[1].d) - (a[1].k + a[1].a) / Math.max(1, a[1].d))[0];
+    const row = (img, title, sub) => `<div class="bc-row"><img src="${img}" alt=""><div><b>${esc(title)}</b><div class="pm">${sub}</div></div></div>`;
+    bola = row(champImg(mp[0]), cname(mp[0]), `Más elegido · ${mp[1].picks} veces · ${pct(mp[1].wins / mp[1].picks)} victorias`)
+      + row(champImg(bw[0]), cname(bw[0]), `Mejor % de victorias · ${pct(bw[1].wins / bw[1].picks)} (${bw[1].picks} juegos)`)
+      + (bk ? row(champImg(bk[1].champ), bk[0], `Mejor KDA · ${((bk[1].k + bk[1].a) / Math.max(1, bk[1].d)).toFixed(1)} con ${cname(bk[1].champ)}`) : '')
+      + `<div class="pm" style="margin-top:6px">De ${cb.n} juegos de Worlds 2026.</div>`;
+  }
+  setHtml('#iniBet', `<h2>🔮 Bola de Cristal</h2>` + bola + go('pickem', `Ver Pick'Em completo`));
   h = '<h2>🏆 Favoritos a ganar Worlds</h2>';
   if (C.rows) {
-    h += C.rows.slice(0, 6).map(r => `<div class="iv-bar"><span>${C.img[r.t] ? `<img src="${esc(C.img[r.t])}" alt="" style="width:18px;height:18px;object-fit:contain;vertical-align:middle">` : ''} <b>${esc(r.t)}</b></span><div><div style="width:${Math.max(2, Math.round(r.c * 100 / Math.max(C.rows[0].c, 0.01)))}%"></div></div><span>${pct(r.c)}</span></div>`).join('');
-    const pi = C.rows.filter(r => r.pi != null).sort((x, y) => y.pi - x.pi)[0];
-    if (pi) h += `<div class="pm" style="margin-top:4px">Favorito para salir del Play-In: <b>${esc(pi.t)}</b> ${pct(pi.pi)}</div>`;
+    h += C.rows.slice(0, 8).map(r => `<div class="iv-bar"><span>${C.img[r.t] ? `<img src="${esc(C.img[r.t])}" alt="" style="width:18px;height:18px;object-fit:contain;vertical-align:middle">` : ''} <b>${esc(r.t)}</b></span><div><div style="width:${Math.max(2, Math.round(r.c * 100 / Math.max(C.rows[0].c, 0.01)))}%"></div></div><span>${pct(r.c)}</span></div>`).join('');
   } else h += '<div class="pm">Calculando…</div>';
-  $('#iniCopa').innerHTML = h + go('copa', 'Ver el Mundial');
-  const done = schedule.filter(e => e.state === 'completed' && e.startTime >= '2026-10-01').slice(-5).reverse();
-  h = '<h2>📜 Últimos resultados</h2>' + (done.map(e => `<div class="iv-st"><b>${e.match.teams.map(t => esc(t.code) + ' ' + ((t.result || {}).gameWins ?? 0)).join(' – ')}</b> <span class="pm">· ${esc(e.blockName || '')} · ${fmtDate(e.startTime)}</span></div>`).join('') || '<div class="pm">Todavía no hay partidos terminados.</div>');
-  $('#iniRes').innerHTML = h + go('hist', 'Ver el historial');
-  const up = schedule.filter(e => e.state === 'unstarted').slice(0, 5);
-  $('#iniAgenda').innerHTML = '<h2>📅 Próximos partidos (su hora)</h2>' + (up.map(e => `<div class="iv-st"><b>${e.match.teams.map(t => esc(t.code)).join(' vs ')}</b> <span class="pm">· ${esc(e.blockName || '')} · Bo${e.match.strategy.count}</span><span style="float:right" class="pm">${fmtDate(e.startTime)}</span></div>`).join('') || '<div class="pm">Sin agenda.</div>');
-  $('#iniDatos').innerHTML = `<h2>📡 Estado de los datos</h2>
+  setHtml('#iniCopa', h + go('copa', 'Ver el Mundial'));
+  // Camino del torneo: probabilidad de avanzar de cada equipo.
+  let camino;
+  if (C.rows) {
+    const rows = C.rows.slice(0, 12).map(r => `<tr><td><b>${esc(r.t)}</b> <span class="pm">${esc(r.reg || '')}</span></td><td class="num pm">${Math.round(r.elo)}</td><td class="num">${r.pi != null ? pct(r.pi) : '<span class="pm">directo</span>'}</td><td class="num">${pct(r.sf)}</td><td class="num"><b>${pct(r.c)}</b></td></tr>`).join('');
+    camino = `<table class="camino"><thead><tr><th>Equipo</th><th>Elo</th><th>Avanza Play-In</th><th>Semis</th><th>Campeón</th></tr></thead><tbody>${rows}</tbody></table>`;
+  } else camino = '<div class="pm">Calculando la simulación del torneo…</div>';
+  setHtml('#iniCamino', '<h2>🗺️ Camino del torneo</h2><p class="card-help">Probabilidad de cada equipo de avanzar, de 20.000 simulaciones.</p>' + camino);
+  // Pick'Em sugerido
+  let pick;
+  if (C.rows) {
+    const by = f => C.rows.slice().sort((x, y) => f(y) - f(x));
+    const w30 = by(x => x.w30).slice(0, 2), l03 = by(x => x.l03).slice(0, 2), used = new Set([...w30, ...l03].map(x => x.t));
+    const adv = by(x => x.qf - x.w30).filter(x => !used.has(x.t)).slice(0, 3);
+    const chip = (r, v) => `<span class="pk-chip">${C.img[r.t] ? `<img src="${esc(C.img[r.t])}" alt="">` : ''}<b>${esc(r.t)}</b> <span class="pm">${pct(v)}</span></span>`;
+    pick = `<div class="pk-row"><div class="pk-k">Terminan 3-0</div><div>${w30.map(r => chip(r, r.w30)).join('')}</div></div>
+      <div class="pk-row"><div class="pk-k">Terminan 0-3</div><div>${l03.map(r => chip(r, r.l03)).join('')}</div></div>
+      <div class="pk-row"><div class="pk-k">Avanzan 3-1/3-2</div><div>${adv.map(r => chip(r, r.qf - r.w30)).join('')}</div></div>`;
+  } else pick = '<div class="pm">Calculando…</div>';
+  setHtml('#iniPickem', `<h2>🎯 Pick'Em sugerido</h2>` + pick + go('pickem', `Registrar en lolesports`));
+  const fmtDay = s => new Intl.DateTimeFormat('es-HN', {weekday: 'short', day: 'numeric', month: 'short'}).format(new Date(s));
+  const done = schedule.filter(e => e.state === 'completed' && e.startTime >= '2026-10-01').slice(-4).reverse();
+  h = '<h2>📜 Últimos resultados</h2>' + (done.map(e => {
+    const [a, b] = e.match.teams, wa = (a.result || {}).gameWins ?? 0, wb = (b.result || {}).gameWins ?? 0, aw = wa >= wb;
+    return `<div class="up-row"><span><b class="${aw ? '' : 'pm'}">${esc(a.code)} ${wa}</b> <span class="pm">–</span> <b class="${aw ? 'pm' : ''}">${wb} ${esc(b.code)}</b></span><span class="pm">${fmtDay(e.startTime)}</span></div>`;
+  }).join('') || '<div class="pm">Todavía no hay partidos terminados.</div>');
+  setHtml('#iniRes', h + go('hist', 'Ver el historial'));
+  const up = schedule.filter(e => e.state === 'unstarted').slice(0, 7);
+  const tzo = -new Date().getTimezoneOffset() / 60, tzs = `GMT${tzo >= 0 ? '+' : ''}${tzo}`;
+  setHtml('#iniAgenda', `<h2>📅 Próximos partidos</h2><p class="card-help">En tu hora local (${tzs}).</p>` + (up.map(e => `<div class="up-row"><span><b>${e.match.teams.map(t => esc(t.code)).join(' vs ')}</b> <span class="pm">· ${esc(e.blockName || '')} · Bo${e.match.strategy.count}</span></span><span class="pm">${fmtDate(e.startTime)}</span></div>`).join('') || '<div class="pm">Sin agenda.</div>'));
+  setHtml('#iniDatos', `<h2>📡 Estado de los datos</h2>
     <div class="iv-st">Retraso frente al stream: <b>${delay} s</b> <span class="pm">(automático)</span></div>
     <div class="iv-st">Los datos de lolesports llegan con <b>${Math.round(feedLag) || '—'} s</b></div>
     <div class="iv-st">Elo: <b>${C.loaded ? C.n.toLocaleString('es-HN') + ' partidos' : 'cargando…'}</b></div>
     <div class="iv-st">${salud('esports', 'lolesports')} ${salud('feed', 'feed en vivo')} ${salud('ddragon', 'Data Dragon')}</div>
-    <div class="pm" style="margin-top:6px">Esports vía feed no oficial de lolesports; campeones e ítems por Data Dragon (oficial). No afiliado a Riot Games.</div>`;
-  $('#iniFiab').innerHTML = '<h2>📈 Fiabilidad del sistema</h2>' + fiabResumen() + `<button class="ini-go" data-act="fiab">Ver la tasa de aciertos completa</button>`;
+    <div class="pm" style="margin-top:6px">Esports vía feed no oficial de lolesports; campeones e ítems por Data Dragon (oficial). No afiliado a Riot Games.</div>`);
+  setHtml('#iniFiab', '<h2>📈 Fiabilidad del sistema</h2>' + fiabResumen() + `<button class="ini-go" data-act="fiab">Ver la tasa de aciertos completa</button>`);
 }
 
 // ---------- Pick'Em y Bola de Cristal ----------
@@ -1924,7 +2038,7 @@ async function pinGame(matchId, gameId) {
   setInterval(tickLive, 30000);
   setInterval(tickSchedule, 120000);
   setInterval(probeLag, 15000);
-  setInterval(() => { renderHead(); renderTimers(); playerTick(); }, 500);
+  setInterval(() => { renderHead(); renderTimers(); playerTick(); tickReloj(); }, 500);
   setInterval(renderInicio, 2000);
   setInterval(tickNext, 60000);
   tickNext();
